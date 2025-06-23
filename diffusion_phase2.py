@@ -1,19 +1,60 @@
 # diffusion_phase2.py
-import os
-import sys
-
-sys.path.append(os.path.join(os.path.dirname(__file__), "../physicsnemo"))
-
 import torch
 import torch.nn as nn
 import torch.optim as optim
 from torch.utils.data import Dataset, DataLoader
-from physicsnemo.models.diffusion.unet import UNet as PhysicsNeMoUNet
-from regression_phase1 import QPesumTreadDataset, RegressionNet
-import numpy as np
+from regression_phase1 import QPesumTreadDataset, RegressionNet, compute_norm_params
 from torch.utils.tensorboard import SummaryWriter
-import matplotlib.pyplot as plt
 import torchvision
+
+
+class DoubleConv(nn.Module):
+    def __init__(self, in_ch, out_ch):
+        super().__init__()
+        self.net = nn.Sequential(
+            nn.Conv2d(in_ch, out_ch, 3, padding=1),
+            nn.ReLU(inplace=True),
+            nn.Conv2d(out_ch, out_ch, 3, padding=1),
+            nn.ReLU(inplace=True),
+        )
+
+    def forward(self, x):
+        return self.net(x)
+
+
+class SimpleUNet(nn.Module):
+    def __init__(self, in_channels=2, out_channels=1, features=32):
+        super().__init__()
+        self.down1 = DoubleConv(in_channels, features)
+        self.pool1 = nn.MaxPool2d(2)
+        self.down2 = DoubleConv(features, features * 2)
+        self.pool2 = nn.MaxPool2d(2)
+
+        self.bottleneck = DoubleConv(features * 2, features * 4)
+
+        self.up2 = nn.ConvTranspose2d(features * 4, features * 2, kernel_size=2, stride=2)
+        self.conv2 = DoubleConv(features * 4, features * 2)
+        self.up1 = nn.ConvTranspose2d(features * 2, features, kernel_size=2, stride=2)
+        self.conv1 = DoubleConv(features * 2, features)
+
+        self.final = nn.Conv2d(features, out_channels, kernel_size=1)
+
+    def forward(self, x):
+        d1 = self.down1(x)
+        p1 = self.pool1(d1)
+        d2 = self.down2(p1)
+        p2 = self.pool2(d2)
+
+        bott = self.bottleneck(p2)
+
+        u2 = self.up2(bott)
+        cat2 = torch.cat([u2, d2], dim=1)
+        c2 = self.conv2(cat2)
+        u1 = self.up1(c2)
+        cat1 = torch.cat([u1, d1], dim=1)
+        c1 = self.conv1(cat1)
+
+        return self.final(c1)
 
 
 # 1. 二階段資料集：高解析背景 + 迴歸預估 → 預測殘差
@@ -44,13 +85,9 @@ class ResidualDiffusionDataset(Dataset):
 
 # 2. 擴散模型：UNet 接收 hr_bg 和 reg_est，輸出殘差
 class ResidualDiffusionNet(nn.Module):
-    def __init__(self, resolution):
+    def __init__(self):
         super().__init__()
-        self.unet = PhysicsNeMoUNet(
-            img_resolution=resolution,
-            img_in_channels=2,
-            img_out_channels=1
-        )
+        self.unet = SimpleUNet(in_channels=2, out_channels=1)
 
     def forward(self, hr_bg, reg_est):
         x = torch.cat([hr_bg, reg_est], dim=1)
@@ -104,14 +141,20 @@ if __name__ == "__main__":
     device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
     print(f"Device: {device}")
 
-    base_ds = QPesumTreadDataset(year=2012, train=True)
+    base_ds = QPesumTreadDataset(year=2021, train=True)
+    norm_params = compute_norm_params(base_ds)
+    def transform(x, y):
+        y = torch.nan_to_num((torch.log1p(y) - norm_params['qpe']['mean']) / norm_params['qpe']['std'], nan=0.0)
+        return x, y
+    base_ds.transform = transform
+
     reg_model = RegressionNet()
-    reg_model.load_state_dict(torch.load("regression_model.pt", map_location=device))
+    reg_model.load_state_dict(torch.load("reg_net.pth", map_location=device))
 
     ds = ResidualDiffusionDataset(base_ds, reg_model, device)
     train_loader = DataLoader(ds, batch_size=2, shuffle=True)
 
-    diffusion_net = ResidualDiffusionNet(resolution=ds[0][0].shape[-2:])
+    diffusion_net = ResidualDiffusionNet()
     optimizer = optim.Adam(diffusion_net.parameters(), lr=1e-4)
 
     writer = SummaryWriter("runs/diffusion_phase2")
