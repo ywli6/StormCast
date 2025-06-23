@@ -48,13 +48,28 @@ class SimpleUNet(nn.Module):
         bott = self.bottleneck(p2)
 
         u2 = self.up2(bott)
+        if u2.shape[-2:] != d2.shape[-2:]:
+            diff_y = d2.size(2) - u2.size(2)
+            diff_x = d2.size(3) - u2.size(3)
+            u2 = nn.functional.pad(u2, [diff_x // 2, diff_x - diff_x // 2,
+                                       diff_y // 2, diff_y - diff_y // 2])
         cat2 = torch.cat([u2, d2], dim=1)
         c2 = self.conv2(cat2)
         u1 = self.up1(c2)
+        if u1.shape[-2:] != d1.shape[-2:]:
+            diff_y = d1.size(2) - u1.size(2)
+            diff_x = d1.size(3) - u1.size(3)
+            u1 = nn.functional.pad(u1, [diff_x // 2, diff_x - diff_x // 2,
+                                       diff_y // 2, diff_y - diff_y // 2])
         cat1 = torch.cat([u1, d1], dim=1)
         c1 = self.conv1(cat1)
-
-        return self.final(c1)
+        out = self.final(c1)
+        if out.shape[-2:] != x.shape[-2:]:
+            diff_y = x.size(2) - out.size(2)
+            diff_x = x.size(3) - out.size(3)
+            out = nn.functional.pad(out, [diff_x // 2, diff_x - diff_x // 2,
+                                         diff_y // 2, diff_y - diff_y // 2])
+        return out
 
 
 # 1. 二階段資料集：高解析背景 + 迴歸預估 → 預測殘差
