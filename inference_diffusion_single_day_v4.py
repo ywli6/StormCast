@@ -70,15 +70,16 @@ def main():
         x,y=ds[base+hr]
         x_pad,ph,pw=pad4(x.unsqueeze(0).to(dev)); reg_pad=reg(x_pad)[0].cpu()
         reg_est=reg_pad[..., :-ph or None, :-pw or None]
-
+        mask = x[-1:]
+        reg_est = reg_est * mask
         cond=torch.cat([x,reg_est],0).unsqueeze(0).to(dev)
         cond_pad,ph2,pw2=pad4(cond); res_pad=ddpm_sample(cond_pad,diff,T=1000,steps=args.steps,device=dev)[0].cpu()
-        res_hat=res_pad[..., :-ph2 or None, :-pw2 or None]
-
+#        res_hat=res_pad[..., :-ph2 or None, :-pw2 or None]
+        res_hat=res_pad[..., :-ph2 or None, :-pw2 or None] * mask
         reg_hr,true_hr,pred_hr=map(den,[reg_est,y,reg_est+res_hat])
 
         fig,axs=plt.subplots(2,2,figsize=(10,9),subplot_kw={'projection':ccrs.PlateCarree()})
-        ts=f"{args.date[:4]}-{args.date[4:6]}-{args.date[6:]} {hr:02d}Z"
+        ts=f"{args.date[:4]}-{args.date[4:6]}-{args.date[6:]} {hr:02d} Hour"
         plot_panel(axs[0,0],lon,lat,coarse.isel(time=hr),f"TReAD Rain • {ts}")
         plot_panel(axs[0,1],lon,lat,reg_hr,f"Regression Est • {ts}")
         plot_panel(axs[1,0],lon,lat,true_hr,f"QPESUM • {ts}")

@@ -31,8 +31,10 @@ class ResidualDiffusionDataset(torch.utils.data.Dataset):
         x, y = self.base[idx]
         with torch.no_grad():
             reg = self.reg(x.unsqueeze(0).to(self.dev))[0].cpu()
-        return torch.cat([x, reg], 0), y - reg          # (cond , residual)
-
+#        return torch.cat([x, reg], 0), y - reg          # (cond , residual)
+        mask = x[-1:]
+        res  = (y - reg) * mask
+        return torch.cat([x, reg], 0), res          # (cond , residual)
 # ---------------- UNet ε-predictor --------------------------------------------------------
 class DoubleConv(nn.Module):
     def __init__(self, ic, oc):
@@ -96,11 +98,13 @@ def main():
         net.train(); t_loss=0
         for cond,res in tr_dl:
             cond,res = cond.to(dev), res.to(dev)
+            mask = cond[:, -2:-1]
             t = torch.randint(0,args.timesteps,(cond.size(0),),device=dev)
             eps = torch.randn_like(res)
             x_t = q_sample(res,t,eps,a_bar)
             pred = net(torch.cat([cond,x_t],1))
-            loss = nn.functional.mse_loss(pred,eps)
+#           loss = nn.functional.mse_loss(pred,eps)
+            loss = ((pred - eps).pow(2) * mask).mean()
             opt.zero_grad(); loss.backward(); opt.step()
             t_loss += loss.item(); gstep+=1
             if gstep%50==0: writer.add_scalar('loss/train_step',loss.item(),gstep)
@@ -110,11 +114,13 @@ def main():
         with torch.no_grad():
             for cond,res in va_dl:
                 cond,res = cond.to(dev), res.to(dev)
+                mask = cond[:, -2:-1]
                 t = torch.randint(0,args.timesteps,(cond.size(0),),device=dev)
                 eps = torch.randn_like(res)
                 x_t = q_sample(res,t,eps,a_bar)
                 pred = net(torch.cat([cond,x_t],1))
-                v_loss += nn.functional.mse_loss(pred,eps).item()
+#                v_loss += nn.functional.mse_loss(pred,eps).item()
+                v_loss += ((pred - eps).pow(2) * mask).mean().item()
         writer.add_scalars('loss/epoch',{'train':t_loss/len(tr_dl),'val':v_loss/len(va_dl)},ep)
         print(f'[DDPM] ep{ep}/{args.epochs} train={t_loss/len(tr_dl):.4f} val={v_loss/len(va_dl):.4f}')
         if ep%10==0:
